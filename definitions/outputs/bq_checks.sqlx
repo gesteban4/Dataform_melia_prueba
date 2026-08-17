@@ -1,0 +1,166 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_stage",
+    name: dataform.projectConfig.vars.env + "-bq_checks", 
+    description: "Tabla de incidencias diarias.",
+    columns: {
+      date: "Fecha en la que se lanza la query"
+    },
+    bigquery: {
+        partitionBy: "date",
+    partitionExpirationDays: 30
+    },
+tags:["queries_diarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+
+WITH base AS (
+    SELECT *
+    FROM ${ref("kpis")}
+    WHERE
+        ${when(incremental(),
+        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)
+        AND datetime < DATE(${constants.current_timestamp_utc}, 'Europe/Madrid')`,
+        `datetime IS NOT NULL`)}
+),
+
+counts AS (
+    SELECT COUNT(*) AS total_rows
+    FROM base
+),
+
+checks AS (
+    SELECT
+        'no_data' AS check_name,
+        'No records were loaded into the KPIs table.' AS description,
+        CURRENT_DATE("Europe/Madrid") AS date,
+        STRING(NULL) AS session_id,
+        STRING(NULL) AS interaction_id,
+        STRING(NULL) AS country,
+        STRING(NULL) AS language,
+        STRING(NULL) AS channel,
+        STRING(NULL) AS user_message,
+        STRING(NULL) AS assistant_response,
+        BOOL(NULL) AS assistant_interaction,
+        BOOL(NULL) AS end_conversation,
+        BOOL(NULL) AS ignored,
+        BOOL(NULL) AS transferred,
+        STRING(NULL) AS transfer_reason
+    FROM counts
+    WHERE total_rows = 0
+
+UNION ALL
+    SELECT
+        'missing_kpi',
+        'KPI values are missing.',
+        CURRENT_DATE("Europe/Madrid") AS date,
+        session_id,
+        interaction_id,
+        country,
+        language,
+        channel,
+        user_message,
+        assistant_response,
+        assistant_interaction,
+        end_conversation,
+        ignored,
+        transferred,
+        transfer_reason
+    FROM base, counts
+    WHERE total_rows > 0
+        AND JSON_VALUE(LOWER(custom_fields), '$.default_kpis') = 'true'
+
+UNION ALL
+    SELECT
+        'flag_conflict',
+        'end_conversation and ignored are both true.',
+        CURRENT_DATE("Europe/Madrid") AS date,
+        session_id,
+        interaction_id,
+        country,
+        language,
+        channel,
+        user_message,
+        assistant_response,
+        assistant_interaction,
+        end_conversation,
+        ignored,
+        transferred,
+        transfer_reason
+    FROM base, counts
+    WHERE total_rows > 0
+        AND end_conversation = TRUE
+        AND ignored = TRUE
+  
+UNION ALL
+    SELECT
+        'flag_conflict',
+        'transferred is true but transfer_reason is null.',
+        CURRENT_DATE("Europe/Madrid") AS date,
+        session_id,
+        interaction_id,
+        country,
+        language,
+        channel,
+        user_message,
+        assistant_response,
+        assistant_interaction,
+        end_conversation,
+        ignored,
+        transferred,
+        transfer_reason
+    FROM base, counts
+    WHERE total_rows > 0
+        AND transferred = TRUE
+        AND transfer_reason IS NULL
+
+UNION ALL
+    SELECT
+        'null_fields',
+        CONCAT('Null values found in: ',
+            ARRAY_TO_STRING(ARRAY(
+                SELECT field_name FROM UNNEST([
+                    IF(session_id IS NULL, 'session_id', NULL),
+                    IF(interaction_id IS NULL, 'interaction_id', NULL),
+                    IF(country IS NULL, 'country', NULL),
+                    IF(language IS NULL, 'language', NULL),
+                    IF(channel IS NULL, 'channel', NULL),
+                    IF(assistant_interaction IS NULL, 'assistant_interaction', NULL),
+                    IF(end_conversation IS NULL, 'end_conversation', NULL),
+                    IF(ignored IS NULL, 'ignored', NULL),
+                    IF(transferred IS NULL, 'transferred', NULL)
+                ]) AS field_name
+                WHERE field_name IS NOT NULL), ', ')) AS description,
+        CURRENT_DATE("Europe/Madrid") AS date,
+        session_id,
+        interaction_id,
+        country,
+        language,
+        channel,
+        user_message,
+        assistant_response,
+        assistant_interaction,
+        end_conversation,
+        ignored,
+        transferred,
+        transfer_reason
+    FROM base, counts
+    WHERE total_rows > 0
+        AND (session_id IS NULL
+            OR interaction_id IS NULL
+            OR country IS NULL
+            OR language IS NULL
+            OR channel IS NULL
+            OR assistant_interaction IS NULL
+            OR end_conversation IS NULL
+            OR ignored IS NULL
+            OR transferred IS NULL)
+)
+
+SELECT *
+FROM checks

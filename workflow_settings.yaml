@@ -1,0 +1,18 @@
+dataformCoreVersion: 3.0.7
+defaultProject: "mhi-prj-75908575"
+defaultDataset: "bqdataset_chatbot_genai_kpis_stage"
+defaultLocation: "europe-west1"
+defaultAssertionDataset: "{defaultAssertionDataset}"
+vars:
+    #
+    # Required. Name of the dataset for the intermediate tables that are considered 
+    # temporary for each execution.
+    #
+    default_temporary_dataset: "{default_temporary_dataset}"
+    env: "stage" #entorno de desarrollo - Descomentar para usar este entorno
+    #
+    # Optional. Current timestamp in UTC that the workflow will set as a reference. 
+    # Format: yyyy-MM-dd hh:mm:ss
+    # Default: CURRENT_TIMESTAMP()
+    #
+    #current_timestamp_utc: "{current_timestamp_utc}"

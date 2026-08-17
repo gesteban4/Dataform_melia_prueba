@@ -1,0 +1,79 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-users_type", 
+    description: "Usuarios nuevos y recurrentes",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "DATE(primerUso)"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'DATE(primerUso)', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 365 DAY)')}
+}
+
+
+WITH sesiones AS (
+    SELECT
+        user_id,
+        session_id,
+        COUNT(session_id) AS mensajes_sesiones,
+        MIN(datetime) AS inicio_sesion
+    FROM ${ref("kpis")}
+    WHERE
+        datetime >= DATE_SUB(CURRENT_DATE("Europe/Madrid"), INTERVAL 365 DAY)
+    GROUP BY
+        user_id,
+        session_id
+),
+ordenadas AS (
+    SELECT
+        user_id,
+        session_id,
+        inicio_sesion,
+        mensajes_sesiones,
+        LAG(inicio_sesion) OVER (PARTITION BY user_id ORDER BY inicio_sesion) AS anterior
+    FROM sesiones
+),
+tiempo AS (
+    SELECT
+        IFNULL(NULLIF(user_id, ''), session_id) AS user_id,
+        session_id,
+        inicio_sesion,
+        mensajes_sesiones,
+        anterior,
+        DATETIME_DIFF(inicio_sesion, anterior, SECOND) AS diff_seg
+    FROM ordenadas
+
+),
+datosFinales AS (
+    SELECT
+        user_id,
+        ARRAY_AGG(session_id ORDER BY anterior DESC LIMIT 1)[OFFSET(0)] AS session_id,
+        MIN(inicio_sesion) AS primerUso,
+        IF(MAX(inicio_sesion) != MIN(inicio_sesion),MAX(inicio_sesion), MIN(inicio_sesion)) AS ultimoUso,
+        AVG(mensajes_sesiones) AS mensajes_sesiones,
+        ROUND(AVG(diff_seg)/3600, 2) AS horasPromedioRecurrencia
+    FROM tiempo
+    GROUP BY user_id
+),
+
+tipoUsuario AS (
+    SELECT *,
+        (CASE
+            WHEN user_id = session_id
+                THEN "No logado"
+            WHEN ultimoUso = primerUso
+                THEN "Nuevo"
+            WHEN ultimoUso != primerUso
+                THEN "Recurrente"
+        END ) AS userType
+    FROM datosFinales
+)
+
+SELECT *
+FROM tipoUsuario

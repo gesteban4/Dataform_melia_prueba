@@ -1,0 +1,89 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-fallback_classification", 
+    description: "Categorizar con IA fallbacks",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "DATE(datetime)"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'DATE(datetime)', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+WITH fallbacks AS (
+    SELECT
+        datetime,
+        country,
+        language,
+        content_group,
+        channel,
+        hotel_id,
+        session_id,
+        interaction_id,
+        user_message,
+        assistant_response,
+        classification,
+        subclassification
+    FROM ${ref("kpis")}
+    WHERE
+        ${when(incremental(),
+        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `datetime IS NOT NULL`)}
+        AND classification = "not_understood"
+),
+location AS ( 
+    SELECT
+        hotel_code AS hotel_id,
+        hotel_name,
+        CONCAT(country,", ", city) AS location
+    FROM ${ref("hotel_recommendation_table")}
+),
+
+ml_results AS (
+    SELECT
+        interaction_id,
+        ml_generate_text_result AS category_prediction,
+        JSON_VALUE(JSON_QUERY(ml_generate_text_result, '$.candidates[0].content.parts[0]'), '$.text') AS category_text
+    FROM ML.GENERATE_TEXT(
+        MODEL ${ref("gemini_2_5_flash")},
+        (SELECT
+            interaction_id,
+            CONCAT(
+                'Imagina que eres un categorizador de fallbacks de un asistente virtual y te piden que categorices las interacciones que no ha entendido el asistente en una de las siguentes categorías:'
+                'Agramatical: El input no tiene sentido lingüístico.',
+                'Fuera de dominio: El tema de la consulta no compete al bot.',
+                'Idioma no soportado: El bot no maneja el idioma usado por el usuario.',
+                'Contenido ofensivo: El input viola las políticas de uso.',
+                'Solo puedes categorizar con el nombre de la categoría. La conversación completa es la siguiente: ',
+                IFNULL(user_message, ''),
+                '. Category:'
+            ) AS prompt
+        FROM fallbacks))
+)
+
+SELECT
+    datetime,
+    country,
+    language,
+    content_group,
+    channel,
+    fb.hotel_id,
+    lc.hotel_name,
+    session_id,
+    fb.interaction_id,
+    user_message,
+    assistant_response,
+    classification,
+    subclassification,
+    m.category_text AS fallback_classification
+FROM fallbacks fb
+LEFT JOIN ml_results AS m
+    ON m.interaction_id = fb.interaction_id
+LEFT JOIN location AS lc
+    ON lc.hotel_id =  LTRIM(fb.hotel_id, '0') 

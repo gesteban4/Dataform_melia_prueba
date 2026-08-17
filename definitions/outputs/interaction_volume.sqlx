@@ -1,0 +1,73 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-interaction_volume", 
+    description: "Volumen tipo de interacción",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "date"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+WITH location AS ( 
+    SELECT
+        hotel_code,
+        hotel_name,
+        CONCAT(country,", ", city) AS location
+    FROM ${ref("hotel_recommendation_table")}
+)
+
+SELECT
+    DATE(a.datetime) AS date,
+    DATETIME_TRUNC(a.datetime, HOUR) AS truncHour,
+    a.content_group,
+    a.language,
+    a.country,
+    a.channel,
+    loc.location,
+    loc.hotel_name,
+    a.hotel_id,
+    a.category,
+    a.subcategory,
+    a.classification,
+    a.subclassification,
+    a.end_conversation,
+    a.assistant_interaction,
+    a.ignored,
+    a.transferred,
+    COUNT(a.session_id) AS total_interactions,
+    COUNT(a.user_message) AS user_interactions,
+    COUNT(a.assistant_response) AS assistant_interactions,
+FROM ${ref("kpis")} a
+LEFT JOIN location AS loc
+    ON loc.hotel_code = LTRIM(a.hotel_id, '0') 
+WHERE
+	${when(incremental(),
+    `a.datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+    `a.datetime IS NOT NULL`)}
+    AND subclassification NOT IN ("greeting", "small_talk")
+GROUP BY
+    date,
+    truncHour,
+    a.content_group,
+    a.language,
+    a.country,
+    a.channel,
+    loc.location,
+    loc.hotel_name,
+    a.hotel_id,
+    a.category,
+    a.subcategory,
+    a.classification,
+    a.subclassification,
+    a.end_conversation,
+    a.assistant_interaction,
+    a.ignored,
+    a.transferred

@@ -1,0 +1,53 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-session_summary", 
+    description: "Última interacción de la sesión",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "date"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+
+SELECT
+    DATE(MAX(timemax)) AS date,
+    session_id,
+    MAX(timemax) AS datetime_max,
+    MIN(timemin) AS datetime_min,
+    SUM(duration) AS duration,
+    SUM(userInteractions) AS userInteractions,
+  --AVG(latency) AS latency,
+    ARRAY_AGG(caseCount ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS caseCount,
+    ARRAY_AGG(content_group ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS content_group,
+    ARRAY_AGG(language ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS language,
+    ARRAY_AGG(country ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS country,
+    ARRAY_AGG(channel ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS channel,
+    ARRAY_AGG(hotel_id ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS hotel_id,
+    ARRAY_AGG(hotel_name ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS hotel_name,
+    ARRAY_AGG(userID ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS user_id,
+    ARRAY_AGG(intent ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS intent,
+    ARRAY_AGG(category ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS category,
+    ARRAY_AGG(subcategory ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS subcategory,
+    ARRAY_AGG(classification ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS classification,
+    ARRAY_AGG(subclassification ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS subclassification,
+    ARRAY_AGG(custom_fields ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS custom_fields,
+    ARRAY_AGG(end_conversation ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS end_conversation,
+    ARRAY_AGG(transferred ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS transferred,
+    ARRAY_AGG(transfer_reason ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS transfer_reason,
+    ARRAY_AGG(typeOfSession ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS typeOfSession,
+    ARRAY_AGG(subtypeOfsession ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS subtypeOfsession
+FROM ${ref(dataform.projectConfig.vars.env + "-conversation_summary")}
+WHERE
+    ${when(incremental(),
+    `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+    `date IS NOT NULL`)}
+GROUP BY
+    session_id

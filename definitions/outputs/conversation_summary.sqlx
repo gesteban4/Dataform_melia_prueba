@@ -1,0 +1,449 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-conversation_summary",
+    description: "Última interacción de la conversación",
+    columns: {},
+    bigquery: {
+        partitionBy: "date"
+    },
+    tags: ["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+SELECT
+  MAX(date) AS date,
+  ARRAY_AGG(DATETIME(date, time)
+  ORDER BY
+    date, caseCount, time DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS timemax,
+  ARRAY_AGG(DATETIME(date, time)
+  ORDER BY
+    date, caseCount, time ASC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS timemin,
+  DATETIME_DIFF(ARRAY_AGG( DATETIME(date, time)
+    ORDER BY
+      date, caseCount, time DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)], ARRAY_AGG( DATETIME(date, time)
+    ORDER BY
+      date, caseCount, time ASC
+    LIMIT
+      1)[
+  OFFSET
+    (0)], SECOND) AS duration,
+  SUM(userInteractions) AS userInteractions,
+  ARRAY_AGG(content_group
+  ORDER BY
+    DATETIME(date, time) DESC, caseCount, time DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS content_group,
+  ARRAY_AGG(LANGUAGE
+  ORDER BY
+    date, caseCount, time DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS LANGUAGE,
+  ARRAY_AGG(country
+  ORDER BY
+    date, caseCount, time DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS country,
+  ARRAY_AGG(channel
+  ORDER BY
+    date, caseCount, time DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS channel,
+  ARRAY_AGG(hotel_id
+  ORDER BY
+    DATETIME(date, time) DESC, session_id
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS hotel_id,
+  ARRAY_AGG(hotel_name
+  ORDER BY
+    DATETIME(date, time) DESC, session_id
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS hotel_name,
+  session_id,
+  CONCAT(session_id, caseCount) AS conversationID,
+  ARRAY_AGG(user_id
+  ORDER BY
+    DATETIME(date, time) DESC, caseCount
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS userID,
+IF
+  ( ARRAY_AGG(category
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] = "Reservas"
+    AND ARRAY_AGG(previous_category
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] = "Info hotel"
+    AND (
+    -- Caso 1: transfer_reason = BOOKING
+    ARRAY_AGG(transfer_reason
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] = "BOOKING"
+    OR
+    -- Caso 2: custom_fields = {"static_category":true}
+    ARRAY_AGG(JSON_VALUE(REPLACE(custom_fields, 'TRUE', 'true'), '$.static_category')
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] = 'true' ), ARRAY_AGG(previous_category
+ORDER BY
+  CASE
+    WHEN end_conversation = TRUE THEN 1
+    ELSE 2
+END
+  , DATETIME(date, time) DESC
+LIMIT
+  1)[
+OFFSET
+  (0)], ARRAY_AGG(category
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] ) AS category,
+IF
+  ( ARRAY_AGG(category
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] = "Reservas"
+    AND ARRAY_AGG(previous_category
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] = "Info hotel"
+    AND ( ARRAY_AGG(transfer_reason
+      ORDER BY
+        CASE
+          WHEN end_conversation = TRUE THEN 1
+          ELSE 2
+      END
+        , DATETIME(date, time) DESC
+      LIMIT
+        1)[
+    OFFSET
+      (0)] = "BOOKING"
+      OR ARRAY_AGG(JSON_VALUE(REPLACE(custom_fields, 'TRUE', 'true'), '$.static_category')
+      ORDER BY
+        CASE
+          WHEN end_conversation = TRUE THEN 1
+          ELSE 2
+      END
+        , DATETIME(date, time) DESC
+      LIMIT
+        1)[
+    OFFSET
+      (0)] = 'true' ), ARRAY_AGG(previous_subcategory
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)], ARRAY_AGG(subcategory
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1)[
+  OFFSET
+    (0)] ) AS subcategory,
+  ARRAY_AGG(previous_category
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] AS previous_category,
+  --ARRAY_AGG(subcategory ORDER BY CASE WHEN end_conversation = TRUE THEN 1 ELSE 2 END, DATETIME(date, time) DESC LIMIT 1)[OFFSET(0)] AS subcategory,
+  ARRAY_AGG(intent
+ORDER BY
+  DATETIME(date, time) DESC, session_id
+LIMIT
+  1)[
+OFFSET
+  (0)] AS intent,
+  ARRAY_AGG(classification
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] AS classification,
+  ARRAY_AGG(subclassification
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS subclassification,
+  ARRAY_AGG(JSON_VALUE(custom_fields, '$.static_category')
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS custom_fields,
+  MAX(end_conversation) AS end_conversation,
+  ARRAY_AGG(transferred
+  ORDER BY
+    DATETIME(date, time) DESC, transferred
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS transferred,
+  ARRAY_AGG(transfer_reason
+  ORDER BY
+    DATETIME(date, time) DESC, transfer_reason
+  LIMIT
+    1)[
+OFFSET
+  (0)] AS transfer_reason,
+  caseCount,
+IF
+  ( (COALESCE(COUNT(DISTINCT
+        IF
+          (ignored = FALSE, user_message, NULL)), 0) = 0
+      AND caseCount = 1)
+    OR ARRAY_AGG(
+    IF
+      (ignored = FALSE, subclassification, NULL) IGNORE NULLS
+    ORDER BY
+      CASE
+        WHEN end_conversation = TRUE THEN 1
+        ELSE 2
+    END
+      , DATETIME(date, time) DESC
+    LIMIT
+      1 )[SAFE_OFFSET(0)] IN ("sys.malicious",
+      "chitchat",
+      "small_talk"), "silent", "active" ) AS typeOfSession,
+  CASE
+    WHEN MAX(transferred) IS TRUE AND ARRAY_AGG(transfer_reason ORDER BY DATETIME(date, time) DESC, transfer_reason LIMIT 1)[ OFFSET (0)] = "ERROR_SERVICE" THEN "error"
+    WHEN ARRAY_AGG(subclassification
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] = "small_talk" THEN "small_talk"
+    WHEN COALESCE(COUNT(DISTINCT user_message), 0) = 0 THEN "silent"
+    WHEN ARRAY_AGG(preview_conv_class
+  ORDER BY
+    DATETIME(date, time) DESC, caseCount
+  LIMIT
+    1)[
+OFFSET
+  (0)] IS NOT NULL THEN ARRAY_AGG(preview_conv_class
+  ORDER BY
+    DATETIME(date, time) DESC, caseCount
+  LIMIT
+    1)[
+OFFSET
+  (0)]
+    WHEN ARRAY_AGG(subclassification ORDER BY CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] = "sys.malicious" THEN "sys.malicious"
+    WHEN ARRAY_AGG(subclassification ORDER BY CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1)[
+OFFSET
+  (0)] = "chitchat" THEN "chitchat"
+    WHEN ARRAY_AGG(previous_category ORDER BY CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] = "Info hotel"
+  AND MAX(end_conversation) IS TRUE
+  AND MAX(CASE
+      WHEN end_conversation = TRUE THEN JSON_VALUE(REPLACE(custom_fields, 'TRUE', 'true'), '$.static_category')
+  END
+    ) = 'true'
+  AND ARRAY_AGG(category
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] = "Reservas" THEN "completed transferred"
+    WHEN MAX(end_conversation) IS TRUE AND MAX(CASE
+      WHEN end_conversation = TRUE THEN JSON_VALUE(REPLACE(custom_fields, 'TRUE', 'true'), '$.static_category')
+  END
+    ) = 'true'
+  AND ARRAY_AGG(category
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] IN ("Agente",
+    "Reclamaciones",
+    "Disponibilidad",
+    "Reservas") THEN "derivative"
+    WHEN MAX(end_conversation) IS TRUE AND MAX(transferred) IS TRUE THEN "completed transferred"
+    WHEN MAX(end_conversation) IS TRUE
+  AND MAX(CASE
+      WHEN end_conversation = TRUE THEN JSON_VALUE(REPLACE(custom_fields, 'TRUE', 'true'), '$.static_category')
+  END
+    ) = 'true'
+  AND ARRAY_AGG(category
+  ORDER BY
+    CASE
+      WHEN end_conversation = TRUE THEN 1
+      ELSE 2
+  END
+    , DATETIME(date, time) DESC
+  LIMIT
+    1 )[
+OFFSET
+  (0)] IN ("Operatividad",
+    "Objetos perdidos",
+    "Factura") THEN "derivative"
+    WHEN MAX(end_conversation) IS TRUE AND MAX(CASE
+      WHEN end_conversation = TRUE THEN subclassification
+  END
+    ) = "covered" THEN "completed covered"
+    WHEN MAX(end_conversation) IS TRUE AND MAX(CASE
+      WHEN end_conversation = TRUE THEN subclassification
+  END
+    ) = "covered not found" THEN "completed not found"
+    WHEN MAX(transferred) IS TRUE AND ARRAY_AGG(transfer_reason ORDER BY DATETIME(date, time) DESC, transfer_reason LIMIT 1)[ OFFSET (0)] IN ("DESIGN", "BOOKING") THEN "out of Scope"
+    WHEN MAX(transferred) IS TRUE THEN "transferred"
+    ELSE "abandoned"
+END
+  AS subtypeOfsession
+FROM
+  ${ref(dataform.projectConfig.vars.env + "-transcriptions_caseCount")}
+WHERE
+  ${
+      when(incremental(),
+          `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+          `date IS NOT NULL`)
+  }
+GROUP BY
+  session_id,
+  caseCount

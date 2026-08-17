@@ -1,0 +1,83 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-NA_categories", 
+    description: "Categorizar con IA conversaciones sin categoría",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "date"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+WITH conversations AS (
+    SELECT
+        MIN(DATE(datetime)) AS date,
+        session_id,
+        channel,
+        COUNT(user_message) AS user_messages,
+        ARRAY_AGG( IF(category IS NOT NULL AND category != 'NA', category, NULL) IGNORE NULLS ORDER BY datetime DESC LIMIT 1)[OFFSET(0)] AS last_category,
+        STRING_AGG( CONCAT('[user]: ', IFNULL(user_message, '""'), '\n', '[bot]: ', IFNULL(assistant_response, '""')), '\n' ORDER BY datetime) AS transcription
+    FROM ${ref("kpis")}
+    WHERE
+        ${when(incremental(),
+        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `datetime IS NOT NULL`)}
+    GROUP BY
+        session_id,
+        channel
+),
+NA_categories AS (
+    SELECT *
+    FROM conversations
+    WHERE last_category IS NULL
+        AND user_messages >= 1
+),
+
+ml_results AS (
+    SELECT
+        session_id,
+        ml_generate_text_result AS category_prediction,
+        JSON_VALUE(JSON_QUERY(ml_generate_text_result, '$.candidates[0].content.parts[0]'),'$.text') AS category_text
+    FROM ML.GENERATE_TEXT(
+    MODEL ${ref("gemini_2_5_flash")},
+    (SELECT
+        session_id,
+        CONCAT(
+            'Imagina que eres un categorizador de conversaciones y te piden que categorices las conversaciones de una de las siguentes categorías:'
+            'Reserva: nueva reserva o cotización',
+            'Agente: el usuario pide explícitamente que quiere hablar con un agente o con un humano',
+            'Modificar_reserva: modificación o cancelación de la reserva del usuario de hotel',
+            'Info hotel: información de hotel o de servicios de hoteles',
+            'MeliaRewards: preguntas sobre meliarewards o problemas puntos',
+            'Consulta: consulta sobre la reserva o la confirmación de la reserva de un hotel',
+            'Problemas_APP: la app está fallando o tiene problemas',
+            'Indeterminado: no se puede categorizar en ninguna categoría anterior'
+            'Solo puedes categorizar con el nombre de la categoría. La conversación completa es la siguiente: ',
+            IFNULL(transcription, ''),
+            '. Category:') AS prompt
+    FROM NA_categories))
+)
+
+SELECT
+    c.date,
+    c.session_id,
+    c.channel,
+    c.transcription,
+    c.user_messages,
+    CASE
+        WHEN c.last_category IS NOT NULL THEN c.last_category
+        WHEN c.user_messages < 1 THEN "Saludo inicial"
+        WHEN c.user_messages >= 1 THEN m.category_text
+    END AS category,
+    c.last_category AS last_kpis_category,
+    m.category_text AS IA_category
+FROM conversations c
+LEFT JOIN ml_results AS m
+    ON m.session_id = c.session_id

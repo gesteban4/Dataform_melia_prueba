@@ -1,0 +1,84 @@
+#
+# https://github.com/GoogleCloudPlatform/cloud-build-samples
+#
+# Cloud Build service account requires:
+#  - Cloud Build Service Account
+#  - Dataform Admin
+#  - Service Account User
+#
+# Substitution variables:
+#  - _REGION: Region in which the resource can be found.
+#  - _REPOSITORY_ID: The Dataform repository ID.
+#  - _RELEASE_CONFIG_ID: The ID of the release config. NOTE: It will also be used as gitCommitish, since by architecture decision both RELEASE_CONFIG_ID and gitCommitish will be the name of the remote branch to compile from the code repository.
+#  - _CODE_COMPILATION_CONFIG: Configures various aspects of Dataform code compilation. If set, fields of codeCompilationConfig override the default compilation settings that are specified in workflow_settings.yaml. More information at https://cloud.google.com/dataform/reference/rest/v1beta1/CodeCompilationConfig
+#
+steps:
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: Create Compilation
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - '_REGION=$_REGION'
+      - '_REPOSITORY_ID=$_REPOSITORY_ID'
+      - '_RELEASE_CONFIG_ID=$_RELEASE_CONFIG_ID'
+    script: |
+      #!/usr/bin/env bash
+      # Install jq
+      # The jq command-line tool is a lightweight and flexible command-line JSON processor.
+      apt-get update
+      apt-get install jq -y  
+      # Creates a new CompilationResult in a given project and location.
+      # More information at https://cloud.google.com/dataform/reference/rest/v1beta1/projects.locations.repositories.compilationResults/create
+      output=$(curl -X POST https://dataform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$_REGION/repositories/$_REPOSITORY_ID/compilationResults \
+        -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+        -H "Content-Type: application/json" \
+        -d '{"releaseConfig": "projects/'$PROJECT_ID'/locations/'$_REGION'/repositories/'$_REPOSITORY_ID'/releaseConfigs/'$_RELEASE_CONFIG_ID'"}')
+      compilation_result_name=$(echo $output | jq .name)
+      if [[ $compilation_result_name = null || -z $compilation_result_name ]]
+      then
+        error=$(echo $output | jq .error)
+        if [[ $error != null && -n $error ]]
+        then
+          echo "error_create: $error"
+          exit 1
+        fi
+        echo "error_create: \$compilation_result_name not set or NULL"
+        exit 1
+      fi
+      echo $output > /workspace/compilation_results.txt
+  - name: 'gcr.io/cloud-builders/gcloud'
+    id: Update Release Config
+    env:
+      - 'PROJECT_ID=$PROJECT_ID'
+      - '_REGION=$_REGION'
+      - '_REPOSITORY_ID=$_REPOSITORY_ID'
+      - '_RELEASE_CONFIG_ID=$_RELEASE_CONFIG_ID'
+      - '_CODE_COMPILATION_CONFIG=$_CODE_COMPILATION_CONFIG'
+    script: |
+      #!/usr/bin/env bash
+      # Install jq
+      # The jq command-line tool is a lightweight and flexible command-line JSON processor.
+      apt-get update
+      apt-get install jq -y
+      # Read data from the compilation result in the previous step.
+      compilation_result_name=$(cat /workspace/compilation_results.txt | jq .name)
+      # Updates a single ReleaseConfig.
+      # More information at https://cloud.google.com/dataform/reference/rest/v1beta1/projects.locations.repositories.releaseConfigs/patch
+      output=$(curl -X PATCH https://dataform.googleapis.com/v1beta1/projects/$PROJECT_ID/locations/$_REGION/repositories/$_REPOSITORY_ID/releaseConfigs/$_RELEASE_CONFIG_ID \
+        -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+        -H "Content-Type: application/json" \
+        -d '{"gitCommitish": "'$_RELEASE_CONFIG_ID'", "codeCompilationConfig": '$_CODE_COMPILATION_CONFIG', "releaseCompilationResult": '$compilation_result_name'}')
+      release_compilation_result=$(echo $output | jq .releaseCompilationResult)
+      if [[ $release_compilation_result = null || -z $release_compilation_result ]]
+      then
+        error=$(echo $output | jq .error)
+        if [[ $error != null && -n $error ]]
+        then
+          echo "error_patch: $error"
+          exit 1
+        fi
+        echo "error_patch: \$release_compilation_result not set or NULL"
+        exit 1
+      fi
+timeout: 1700s
+options:
+  logging: STACKDRIVER_ONLY

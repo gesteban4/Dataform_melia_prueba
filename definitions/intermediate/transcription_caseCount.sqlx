@@ -1,0 +1,157 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-transcriptions_caseCount", 
+    description: "Transcripciones de las sesiones con caseCount",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "date"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+
+
+WITH caseCount AS (
+    SELECT 
+        DATE(datetime) AS date,
+        TIME(datetime) AS time,
+        session_id,
+        interaction_id,
+        subclassification,
+        category,
+        subcategory,
+        LAG(category) OVER(PARTITION BY session_id ORDER BY datetime) AS previous_category,
+        LAG(subcategory) OVER(PARTITION BY session_id ORDER BY datetime) AS previous_subcategory,
+        LAG(subclassification) OVER(PARTITION BY session_id ORDER BY datetime) AS previous_subclassification,
+        CASE
+            WHEN end_conversation IS TRUE 
+                AND subcategory IN ("Email", "Teléfono") 
+                AND LAG(subcategory) OVER(PARTITION BY session_id ORDER BY datetime) IN ("Email", "Teléfono") 
+                AND subcategory != LAG(subcategory) OVER(PARTITION BY session_id ORDER BY datetime)
+                THEN ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY datetime) - 1
+            WHEN end_conversation IS TRUE 
+                AND LAG(category) OVER(PARTITION BY session_id ORDER BY datetime) = "Info hotel" 
+                AND LAG(subclassification) OVER(PARTITION BY session_id ORDER BY datetime) = "covered not found" 
+                AND subcategory = "Email"
+                THEN ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY datetime) - 1
+            -- NUEVA REGLA: Reservas tras un cierre (real o transferido no-booking) de Info hotel / Melia Rewards
+            WHEN end_conversation IS TRUE
+                AND category = "Reservas"
+                AND LAG(category) OVER(PARTITION BY session_id ORDER BY datetime) IN ("Info hotel", "Melia Rewards")
+                THEN ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY datetime) - 1
+            ELSE ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY datetime)
+        END AS n_row,
+        CASE
+            WHEN end_conversation IS TRUE 
+                AND subcategory IN ("Email", "Teléfono") 
+                AND LAG(subcategory) OVER(PARTITION BY session_id ORDER BY datetime) IN ("Email", "Teléfono") 
+                AND subcategory != LAG(subcategory) OVER(PARTITION BY session_id ORDER BY datetime)
+                THEN "derivative"
+            WHEN end_conversation IS TRUE 
+                AND LAG(category) OVER(PARTITION BY session_id ORDER BY datetime) = "Info hotel" 
+                AND LAG(subclassification) OVER(PARTITION BY session_id ORDER BY datetime) = "covered not found" 
+                AND subcategory = "Email"
+                THEN "derivative"
+            -- NUEVA REGLA (mismo patrón, mismo caso que arriba)
+            WHEN end_conversation IS TRUE
+                AND category = "Reservas"
+                AND LAG(category) OVER(PARTITION BY session_id ORDER BY datetime) IN ("Info hotel", "Melia Rewards")
+                THEN "completed transferred"
+        END AS preview_conv_class
+    FROM ${ref("kpis")} 
+    WHERE
+        ${when(incremental(),
+        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `datetime IS NOT NULL`)}
+        AND (end_conversation IS TRUE 
+            OR (transferred IS TRUE AND COALESCE(transfer_reason, "NA") != "BOOKING"))
+),
+location AS ( 
+    SELECT
+        hotel_code AS hotel_id,
+        hotel_name,
+        CONCAT(country,", ", city) AS location
+	FROM ${ref("hotel_recommendation_table")}
+),
+lats AS(
+    SELECT
+        k.session_id,
+        MAX(DATE(k.datetime)) AS date,
+        MAX(TIME(k.datetime)) AS time,
+        DATETIME_DIFF(MAX(k.datetime), MIN(k.datetime), SECOND) AS duration,
+        MIN(k.datetime) AS mindatetime,
+        COUNT(user_message) AS userInteractions
+    FROM ${ref("kpis")} AS k
+    WHERE
+        ${when(incremental(),
+        `k.datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `k.datetime IS NOT NULL`)}
+    GROUP BY
+        k.session_id
+)
+
+    SELECT
+        DATE(apt.datetime) AS date,
+        TIME(apt.datetime) AS time,
+        lats.mindatetime,
+        IF(user_message IS NOT NULL, 1, 0) AS userInteractions,
+        latency,
+        content_group,
+        country,
+        `language`,
+        channel,
+        apt.session_id,
+        apt.interaction_id,
+        tk_interaction_id,
+        user_id,
+        classification,
+        apt.subclassification,
+        apt.category,
+        apt.subcategory,
+        apt.hotel_id,
+        lc.hotel_name,
+        user_message,
+        assistant_response,
+        assistant_interaction,
+        end_conversation,
+        ignored,
+        transferred,
+        transfer_reason,
+        intent,
+        LOWER(apt.custom_fields) AS custom_fields,
+        n.previous_category,
+        n.previous_subcategory,
+        CASE
+            WHEN transferred IS TRUE AND LAST_VALUE(apt.category IGNORE NULLS) OVER (PARTITION BY apt.session_id ORDER BY apt.datetime) = "Info hotel"
+            AND transfer_reason = "BOOKING" 
+            AND LAG(n.subclassification) OVER (PARTITION BY apt.session_id ORDER BY apt.datetime) = "covered"
+                THEN n.n_row - 1
+            WHEN n.n_row IS NOT NULL THEN n.n_row
+            WHEN n.n_row IS NULL
+                AND LAST_VALUE(n.n_row IGNORE NULLS) OVER (PARTITION BY apt.session_id ORDER BY apt.datetime) > 0
+                THEN LAST_VALUE(n.n_row IGNORE NULLS) OVER (PARTITION BY apt.session_id ORDER BY apt.datetime)
+            ELSE 1
+        END AS caseCount,
+        n.preview_conv_class,
+    FROM ${ref("kpis")} apt
+    LEFT JOIN caseCount AS n
+        ON n.session_id = apt.session_id
+        AND n.interaction_id = apt.interaction_id
+    LEFT JOIN lats
+        ON lats.session_id = apt.session_id 
+    LEFT JOIN location AS lc
+        ON lc.hotel_id = LTRIM(apt.hotel_id, '0') 
+    WHERE ${when(incremental(),
+        `apt.datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `apt.datetime IS NOT NULL`)}
+        --AND ignored IS FALSE
+        AND user_message IS DISTINCT FROM "hangup-event"
+        AND apt.subclassification IS DISTINCT FROM "inactivity"
+

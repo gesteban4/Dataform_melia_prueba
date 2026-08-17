@@ -1,0 +1,5 @@
+config {
+    type: "declaration",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: "hotel_recommendation_table"
+}

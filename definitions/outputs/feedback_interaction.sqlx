@@ -1,0 +1,67 @@
+config {
+    type: "incremental",
+    schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
+    name: dataform.projectConfig.vars.env + "-feedback_interaction", 
+    description: "Feedback",
+    columns: {
+    },
+    bigquery: {
+        partitionBy: "DATE(datetime)"
+    },
+tags:["queries_horarias"]
+
+}
+
+pre_operations {
+  ${common.renderClearIncrementDate(self(), 'DATE(datetime)', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
+}
+
+WITH feedback AS (
+    SELECT
+        datetime,
+        comment,
+        categories,
+        interaction_id,
+        rating,
+        session_id
+    FROM ${ref("feedback")}
+    WHERE
+        ${when(incremental(),
+        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+        `datetime IS NOT NULL`)}
+),
+location AS ( 
+    SELECT
+        hotel_code AS hotel_id,
+        hotel_name,
+        CONCAT(country,", ", city) AS location
+    FROM ${ref("hotel_recommendation_table")}
+)
+
+SELECT
+kpis.datetime,
+kpis.content_group,
+kpis.language,
+kpis.country,
+kpis.channel,
+kpis.session_id,
+kpis.user_id,
+fb.interaction_id,
+kpis.hotel_id,
+lc.hotel_name,
+kpis.user_message,
+kpis.assistant_response,
+fb.comment,
+fb.categories,
+fb.rating
+FROM ${ref("kpis")} AS kpis    
+INNER JOIN feedback as fb
+    ON kpis.session_id = fb.session_id
+    AND kpis.interaction_id = fb.interaction_id
+LEFT JOIN location AS lc
+    ON lc.hotel_id = LTRIM(kpis.hotel_id, '0') 
+
+WHERE
+    ${when(incremental(),
+    `DATE(kpis.datetime) >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+    `kpis.datetime IS NOT NULL`)}
