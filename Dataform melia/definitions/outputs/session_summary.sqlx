@@ -43,7 +43,19 @@ SELECT
     ARRAY_AGG(transferred ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS transferred,
     ARRAY_AGG(transfer_reason ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS transfer_reason,
     ARRAY_AGG(typeOfSession ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS typeOfSession,
-    ARRAY_AGG(subtypeOfsession ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS subtypeOfsession
+    ARRAY_AGG(subtypeOfsession ORDER BY caseCount DESC LIMIT 1)[OFFSET(0)] AS subtypeOfsession,
+    COUNTIF(
+        subtypeOfsession IN ("completed transferred", "completed covered")
+        OR (subtypeOfsession = "derivative"
+            AND COALESCE(category, "NA") NOT IN ("Reservas", "Reclamaciones"))
+    ) AS efficientConversations,
+    LOGICAL_OR(
+        subtypeOfsession IN ("completed transferred", "completed covered", "transferred", "completed not found")
+        OR (subtypeOfsession = "derivative"
+            AND COALESCE(category, "NA") NOT IN ("Reservas", "Reclamaciones"))
+        OR (subtypeOfsession = "error" AND typeOfSession = "active")
+    ) AS efficiencyEligible
+
 FROM ${ref(dataform.projectConfig.vars.env + "-conversation_summary")}
 WHERE
     ${when(incremental(),

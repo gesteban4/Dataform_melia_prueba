@@ -1,123 +1,174 @@
 config {
     type: "incremental",
     schema: "bqdataset_chatbot_genai_kpis_" + dataform.projectConfig.vars.env,
-    name: dataform.projectConfig.vars.env + "-transcriptions", 
+    name: dataform.projectConfig.vars.env + "-transcriptions",
     description: "Transcripciones de las sesiones",
-    columns: {
-    },
+    columns: {},
     bigquery: {
         partitionBy: "date"
     },
-tags:["queries_horarias"]
+    tags: ["queries_horarias"]
 
 }
+
+WITH
+  feedback AS (
+  SELECT
+    datetime,
+    comment,
+    categories,
+    interaction_id,
+    rating,
+    session_id
+  FROM
+    ${ref("feedback")}
+  WHERE
+    ${
+        when(incremental(),
+            `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+            `datetime IS NOT NULL`)
+    }
+    ),
+  conversations AS (
+  SELECT
+    date,
+    session_id,
+    conversationID,
+    timemin,
+    hotel_id,
+    typeOfSession,
+    subtypeOfsession,
+    caseCount,
+    CASE
+      WHEN typeOfSession = "silent" AND userInteractions > 0 THEN "chitchat"
+      WHEN typeOfSession = "silent"
+    AND subtypeOfsession = "silent" THEN "Silencio"
+      WHEN typeOfSession = "silent" AND subtypeOfsession = "abandoned" THEN "Silencio"
+      WHEN typeOfSession = "silent"THEN subtypeOfsession
+      WHEN typeOfSession = "active" AND subtypeOfsession = "abandoned" THEN "Abandonada"
+      WHEN subtypeOfsession = "derivative"
+    AND category IN ("Reservas",
+      "Reclamaciones") THEN "Fuera de alcance"
+      WHEN subtypeOfsession = "out of Scope" THEN "Fuera de alcance"
+      WHEN subtypeOfsession = "completed transferred" THEN "Transferidas eficientes"
+      WHEN subtypeOfsession = "completed covered" THEN "Info disponible"
+      WHEN subtypeOfsession = "derivative"
+    AND category NOT IN ("Reservas",
+      "Reclamaciones") THEN "Derivadas eficientes"
+      WHEN subtypeOfsession = "transferred" THEN "Transferidas no eficientes"
+      WHEN subtypeOfsession = "completed not found" THEN "Info no disponible"
+      WHEN subtypeOfsession = "error" THEN "Error"
+  END
+    AS conv_summary_subtypeOfsession
+  FROM
+    ${ref(dataform.projectConfig.vars.env + "-conversation_summary")}
+  WHERE
+    ${
+        when(incremental(),
+            `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+            `date<= CURRENT_DATE('Europe/Madrid')`)
+    }
+    ),
+  sessions AS (
+  SELECT
+    date,
+    session_id,
+    userInteractions,
+    typeOfSession,
+    subtypeOfsession,
+    efficientConversations,
+    efficiencyEligible,
+    caseCount AS maxCaseCount,
+    CASE
+      WHEN typeOfSession = "silent" AND userInteractions > 0 THEN "chitchat"
+      WHEN typeOfSession = "silent"
+    AND subtypeOfsession = "silent" THEN "Silencio"
+      WHEN typeOfSession = "silent" AND subtypeOfsession = "abandoned" THEN "Silencio"
+      WHEN typeOfSession = "silent"THEN subtypeOfsession
+      WHEN typeOfSession = "active" AND subtypeOfsession = "abandoned" THEN "Abandonada"
+      WHEN subtypeOfsession = "derivative"
+    AND category IN ("Reservas",
+      "Reclamaciones") THEN "Fuera de alcance"
+      WHEN subtypeOfsession = "out of Scope" THEN "Fuera de alcance"
+      WHEN subtypeOfsession = "completed transferred" THEN "Transferidas eficientes"
+      WHEN subtypeOfsession = "completed covered" THEN "Info disponible"
+      WHEN subtypeOfsession = "derivative"
+    AND category NOT IN ("Reservas",
+      "Reclamaciones") THEN "Derivadas eficientes"
+      WHEN subtypeOfsession = "transferred" THEN "Transferidas no eficientes"
+      WHEN subtypeOfsession = "completed not found" THEN "Info no disponible"
+      WHEN subtypeOfsession = "error" THEN "Error"
+  END
+    AS sess_summary_subtypeOfsession
+  FROM
+    ${ref(dataform.projectConfig.vars.env + "-session_summary")}
+  WHERE
+    ${
+        when(incremental(),
+            `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+            `date<= CURRENT_DATE('Europe/Madrid')`)
+    }
+    )
+SELECT
+  kpis.date,
+  kpis.time,
+  kpis.mindatetime,
+  kpis.content_group,
+  kpis.channel,
+  kpis.country,
+  kpis.`language`,
+  kpis.session_id,
+  kpis.interaction_id,
+  kpis.user_id,
+  kpis.classification,
+  kpis.subclassification,
+  kpis.category,
+  kpis.subcategory,
+  kpis.latency,
+  kpis.hotel_name,
+  kpis.hotel_id,
+  kpis.user_message,
+  kpis.assistant_response,
+  kpis.end_conversation,
+  kpis.intent,
+  kpis.tk_interaction_id,
+  fb.comment,
+  fb.categories,
+  fb.rating,
+  kpis.caseCount,
+  cnv.typeOfSession AS conversation_typeOfSession,
+  cnv.subtypeOfsession AS conversation_subtypeOfsession,
+  cnv.conv_summary_subtypeOfsession,
+  ss.userInteractions,
+  ss.typeOfSession AS session_typeOfSession,
+  ss.subtypeOfsession AS session_subtypeOfsession,
+  ss.sess_summary_subtypeOfsession,
+  ss.efficientConversations,
+  ss.efficientConversations/ss.maxCaseCount AS efficientAverage,
+  ss.efficiencyEligible,
+FROM
+  ${ref(dataform.projectConfig.vars.env + "-transcriptions_caseCount")} AS kpis
+LEFT JOIN
+  conversations AS cnv
+ON
+  kpis.session_id = cnv.session_id
+  AND kpis.casecount = cnv.casecount
+LEFT JOIN
+  sessions AS ss
+ON
+  kpis.session_id = ss.session_id
+LEFT JOIN
+  feedback AS fb
+ON
+  kpis.session_id = fb.session_id
+  AND kpis.interaction_id = fb.interaction_id
+WHERE
+  ${
+      when(incremental(),
+          `kpis.date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
+          `kpis.date<= CURRENT_DATE('Europe/Madrid')`)
+  }
 
 pre_operations {
   ${common.renderClearIncrementDate(self(), 'date', 'DATE_SUB(DATE(' + constants.current_timestamp_utc + ', \'Europe/Madrid\'), INTERVAL 1 DAY)')}
 }
-
-WITH 
-feedback AS (
-    SELECT
-        datetime,
-        comment,
-        categories,
-        interaction_id,
-        rating,
-        session_id
-    FROM ${ref("feedback")}
-    WHERE
-        ${when(incremental(),
-        `datetime >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
-        `datetime IS NOT NULL`)}
-),
-conversations AS (
-    SELECT
-        date,
-        session_id,
-        conversationID,
-        timemin,
-        hotel_id,
-        typeOfSession,
-        subtypeOfsession,
-        caseCount
-    FROM ${ref(dataform.projectConfig.vars.env + "-conversation_summary")}
-    WHERE
-        ${when(incremental(),
-        `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
-        `date<= CURRENT_DATE('Europe/Madrid')`)}
-),
-sessions AS (
-    SELECT
-        date,
-        session_id,
-        userInteractions,
-        typeOfSession,
-        subtypeOfsession,
-        CASE
-            WHEN typeOfSession = "silent" AND userInteractions > 0 THEN "chitchat"
-            WHEN typeOfSession = "silent" AND subtypeOfsession = "silent" THEN "Silencio"
-            WHEN typeOfSession = "silent" AND subtypeOfsession = "abandoned" THEN "Silencio"
-            WHEN typeOfSession = "silent"THEN subtypeOfsession
-            WHEN typeOfSession = "active" AND subtypeOfsession = "abandoned" THEN "Abandonada"
-            WHEN subtypeOfsession = "derivative" AND category IN ("Reservas", "Reclamaciones") THEN "Fuera de alcance"
-            WHEN subtypeOfsession = "out of Scope" THEN "Fuera de alcance"
-            WHEN subtypeOfsession = "completed transferred" THEN "Transferidas eficientes"
-            WHEN subtypeOfsession = "completed covered" THEN "Info disponible"
-            WHEN subtypeOfsession = "derivative" AND category NOT IN ("Reservas", "Reclamaciones") THEN "Derivadas eficientes"
-            WHEN subtypeOfsession = "transferred" THEN "Transferidas no eficientes"
-            WHEN subtypeOfsession = "completed not found" THEN "Info no disponible"
-            WHEN subtypeOfsession = "error" THEN "Error"
-        END AS summary_subtypeOfsession
-    FROM ${ref(dataform.projectConfig.vars.env + "-session_summary")}
-    WHERE
-        ${when(incremental(),
-        `date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
-        `date<= CURRENT_DATE('Europe/Madrid')`)}
-)
-
-SELECT 
-    kpis.date,
-    kpis.time,
-    kpis.mindatetime,
-    kpis.content_group,
-    kpis.channel,
-    kpis.country,
-    kpis.`language`,
-    kpis.session_id,
-    kpis.interaction_id,
-    kpis.user_id,
-    kpis.classification,
-    kpis.subclassification,
-    kpis.category,
-    kpis.subcategory,
-    kpis.latency,
-    kpis.hotel_name,
-    kpis.hotel_id,
-    kpis.user_message,
-    kpis.assistant_response,
-    kpis.end_conversation,
-    kpis.intent,
-    kpis.tk_interaction_id,
-    fb.comment,
-    fb.categories,
-    fb.rating,
-    kpis.caseCount,
-    cnv.typeOfSession AS conversation_typeOfSession,
-    cnv.subtypeOfsession AS conversation_subtypeOfsession,
-    ss.userInteractions,
-    ss.typeOfSession AS session_typeOfSession,
-    ss.subtypeOfsession AS session_subtypeOfsession,
-    ss.summary_subtypeOfsession
-FROM ${ref(dataform.projectConfig.vars.env + "-transcriptions_caseCount")} AS kpis
-LEFT JOIN conversations AS cnv
-    ON kpis.session_id = cnv.session_id
-    AND kpis.casecount = cnv.casecount
-LEFT JOIN sessions AS ss 
-    ON kpis.session_id = ss.session_id
-LEFT JOIN feedback AS fb
-        ON kpis.session_id = fb.session_id
-        AND kpis.interaction_id = fb.interaction_id
-WHERE ${when(incremental(),
-        `kpis.date >= DATE_SUB(DATE(${constants.current_timestamp_utc}, 'Europe/Madrid'), INTERVAL 1 DAY)`,
-        `kpis.date<= CURRENT_DATE('Europe/Madrid')`)}
